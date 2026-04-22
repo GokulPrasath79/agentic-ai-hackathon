@@ -1,61 +1,64 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+import json
+import math
 import re
 
-app = FastAPI()
 
-# Enable CORS for the evaluation engine
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def normalize_text(value):
+    return str(value or "").strip()
 
-class QueryRequest(BaseModel):
-    query: str
-    assets: List[str] = []
 
-class AnswerResponse(BaseModel):
-    output: str
-
-def get_answer_from_query(query: str) -> str:
-    """Handle different types of questions"""
-    query_lower = query.lower().strip()
-    
-    # Handle math questions
-    if "10 + 15" in query or ("what is 10 + 15" in query_lower):
-        return "The sum is 25."
-    
-    # General math pattern
-    math_match = re.search(r'(\d+)\s*\+\s*(\d+)', query)
-    if math_match:
-        num1 = int(math_match.group(1))
-        num2 = int(math_match.group(2))
-        return f"The sum is {num1 + num2}."
-    
-    # Default response for other questions
-    return "Based on the provided information, I cannot answer this question."
-
-@app.post("/v1/answer", response_model=AnswerResponse)
-async def v1_answer(request: QueryRequest):
-    """Main endpoint for the hackathon evaluation"""
+def to_number(value):
     try:
-        answer = get_answer_from_query(request.query)
-        return AnswerResponse(output=answer)
-    except Exception as e:
-        print(f"Error: {e}")
-        return AnswerResponse(output="An error occurred processing your request.")
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if math.isfinite(num) else None
 
-@app.get("/")
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "message": "API is running"}
 
-# For testing locally
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+def format_number(num):
+    if float(num).is_integer():
+        return str(int(num))
+    return str(float(f"{num:.10f}")).rstrip("0").rstrip(".") if "." in str(float(f"{num:.10f}")) else str(float(f"{num:.10f}"))
+
+
+def sum_from_query(query):
+    text = normalize_text(query)
+    lower = text.lower()
+
+    plus_match = re.search(r"(-?\d+(?:\.\d+)?)\s*\+\s*(-?\d+(?:\.\d+)?)", lower)
+    if plus_match:
+        a = to_number(plus_match.group(1))
+        b = to_number(plus_match.group(2))
+        if a is not None and b is not None:
+            return a + b
+
+    add_match = re.search(
+        r"(?:add|sum(?:\s+of)?|what\s+is\s+the\s+sum\s+of|what\s+is)\s+(-?\d+(?:\.\d+)?)\s*(?:and|with)?\s*(-?\d+(?:\.\d+)?)",
+        lower,
+        re.IGNORECASE,
+    )
+    if add_match:
+        a = to_number(add_match.group(1))
+        b = to_number(add_match.group(2))
+        if a is not None and b is not None:
+            return a + b
+
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", lower)
+    asks_for_sum = bool(re.search(r"\b(sum|add|plus|total)\b", lower)) or bool(
+        re.search(r"\bwhat\s+is\b", lower)
+    )
+
+    if asks_for_sum and len(numbers) >= 2:
+        a = to_number(numbers[0])
+        b = to_number(numbers[1])
+        if a is not None and b is not None:
+            return a + b
+
+    return None
+
+
+def build_output(query):
+    result = sum_from_query(query)
+    if result is None:
+        return "I could not determine the answer."
+    return f"The sum is {format_number(result)}."
